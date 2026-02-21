@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Geprek Kumbang AI - Pro Version</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+  
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+    canvas { width: 100vw; height: 100vh; }
+    
+    #score-board {
+      position: absolute;
+      top: 20px; left: 20px;
+      color: #00FF00; font-size: 30px; font-weight: bold;
+      text-shadow: 2px 2px 5px black;
+      z-index: 10;
+    }
+
+    .controls {
+      position: absolute;
+      bottom: 30px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; gap: 10px;
+      z-index: 10;
+    }
+
+    button {
+      padding: 12px 20px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 2px solid #00FF00;
+      color: #00FF00; border-radius: 25px;
+      font-weight: bold; backdrop-filter: blur(5px);
+    }
+    
+    button:active { background: #00FF00; color: black; }
+  </style>
+</head>
+<body>
+
+  <div id="score-board">SKOR: 0</div>
+  
+  <div class="controls">
+    <button onclick="changeCamera('user')">Kamera Depan</button>
+    <button onclick="changeCamera('environment')">Kamera Belakang</button>
+  </div>
+
+  <video id="input_video" style="display:none"></video>
+  <canvas id="output_canvas"></canvas>
+
+  <script>
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const scoreElement = document.getElementById('score-board');
+
+    let score = 0;
+    let cameraMode = 'user';
+    let currentCamera = null;
+
+    // Target Kumbang
+    let bug = { x: 0.5, y: 0.5, size: 60 };
+    // Efek Darah
+    let splats = [];
+
+    function onResults(results) {
+      canvasElement.width = window.innerWidth;
+      canvasElement.height = window.innerHeight;
+      
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      // Logika Flip untuk Kamera Depan
+      if (cameraMode === 'user') {
+        canvasCtx.translate(canvasElement.width, 0);
+        canvasCtx.scale(-1, 1);
+      }
+      
+      // 1. Gambar Video Kamera
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      // 2. Gambar Kerangka Tangan (Garis & Titik)
+      if (results.multiHandLandmarks) {
+        for (const landmarks of results.multiHandLandmarks) {
+          // Menggambar garis penghubung antar sendi (Hijau)
+          drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 5});
+          // Menggambar titik-titik sendi (Merah)
+          drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
+          
+          // Logika Tabrakan (Hanya untuk ujung telunjuk/Titik 8)
+          const indexFinger = landmarks[8];
+          const dx = indexFinger.x - bug.x;
+          const dy = indexFinger.y - bug.y;
+          const distance = Math.sqrt(dx*dx + dy*dy);
+
+          if (distance < 0.08) {
+            score++;
+            scoreElement.innerText = "SKOR: " + score;
+            
+            // Tambah efek darah di koordinat relatif (tanpa flip)
+            splats.push({x: bug.x, y: bug.y, r: 45, alpha: 1.0});
+            
+            // Pindah kumbang ke tempat acak
+            bug.x = Math.random() * 0.8 + 0.1;
+            bug.y = Math.random() * 0.8 + 0.1;
+          }
+        }
+      }
+      canvasCtx.restore();
+
+      // 3. Gambar Efek Darah (Splats) - Digambar di atas video
+      // Perhatikan: Karena koordinat bug relatif terhadap layar, 
+      // kita harus hati-hati dengan mirror kamera depan.
+      splats.forEach((s, index) => {
+        let drawX = cameraMode === 'user' ? (1 - s.x) * canvasElement.width : s.x * canvasElement.width;
+        canvasCtx.beginPath();
+        canvasCtx.fillStyle = `rgba(220, 0, 0, ${s.alpha})`;
+        canvasCtx.arc(drawX, s.y * canvasElement.height, s.r, 0, Math.PI * 2);
+        canvasCtx.fill();
+        s.alpha -= 0.03;
+        if (s.alpha <= 0) splats.splice(index, 1);
+      });
+
+      // 4. Gambar Kumbang (Emoji)
+      let bugDrawX = cameraMode === 'user' ? (1 - bug.x) * canvasElement.width : bug.x * canvasElement.width;
+      canvasCtx.font = `${bug.size}px serif`;
+      canvasCtx.textAlign = "center";
+      canvasCtx.textBaseline = "middle";
+      canvasCtx.fillText("🐞", bugDrawX, bug.y * canvasElement.height);
+    }
+
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6
+    });
+    hands.onResults(onResults);
+
+    function startCamera(mode) {
+      if (currentCamera) { currentCamera.stop(); }
+      cameraMode = mode;
+      currentCamera = new Camera(videoElement, {
+        onFrame: async () => { await hands.send({image: videoElement}); },
+        width: 1280, height: 720,
+        facingMode: mode
+      });
+      currentCamera.start();
+    }
+
+    function changeCamera(mode) {
+      startCamera(mode);
+    }
+
+    startCamera('user');
+  </script>
+</body>
+</html>
